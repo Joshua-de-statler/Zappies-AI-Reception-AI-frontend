@@ -1,3 +1,5 @@
+# app/config.py
+
 import sys
 import os
 from dotenv import load_dotenv
@@ -14,6 +16,8 @@ def load_configurations(app):
     app.config["VERSION"] = os.getenv("VERSION")
     app.config["PHONE_NUMBER_ID"] = os.getenv("PHONE_NUMBER_ID")
     app.config["VERIFY_TOKEN"] = os.getenv("VERIFY_TOKEN")
+    # Add this line for your Gemini API Key
+    app.config["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API_KEY")
 
 
 def configure_logging():

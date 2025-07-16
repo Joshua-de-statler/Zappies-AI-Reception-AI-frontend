@@ -3,8 +3,8 @@ from flask import current_app, jsonify
 import json
 import requests
 
-# Commented out as AI functionality is not desired yet
-# from app.services.openai_service import generate_response
+# UNCOMMENT this line to import the AI service
+from app.services.gemini_service import generate_response
 import re
 
 
@@ -26,10 +26,10 @@ def get_text_message_input(recipient, text):
     )
 
 
-def generate_response(response):
-    # This is the placeholder function that will be used.
-    # It simply converts the input text to uppercase.
-    return response.upper()
+# COMMENT OUT or REMOVE this placeholder function, as we'll use the AI service's generate_response
+# def generate_response(response):
+#     # Return text in uppercase
+#     return response.upper()
 
 
 def send_message(data):
@@ -77,15 +77,13 @@ def process_whatsapp_message(body):
     message = body["entry"][0]["changes"][0]["value"]["messages"][0]
     message_body = message["text"]["body"]
 
-    # This calls the placeholder generate_response function (uppercase text)
-    response = generate_response(message_body)
-    response = process_text_for_whatsapp(response) # Keep this for formatting
+    # COMMENT OUT the old placeholder call
+    # response = generate_response(message_body)
 
-    # Commented out OpenAI Integration
-    # response = generate_response(message_body, wa_id, name)
-    # response = process_text_for_whatsapp(response)
+    # UNCOMMENT these lines to integrate the AI service
+    response = generate_response(message_body, wa_id, name)
+    response = process_text_for_whatsapp(response)
 
-    # CRUCIAL FIX: Pass the 'wa_id' of the sender, not the hardcoded RECIPIENT_WAID
     data = get_text_message_input(wa_id, response)
     send_message(data)
 

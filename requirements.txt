@@ -3,3 +3,4 @@ python-dotenv
 aiohttp
 requests
 # google-genai
+google-generativeai
