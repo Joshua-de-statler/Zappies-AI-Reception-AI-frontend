@@ -1,28 +1,28 @@
 # app/__init__.py
-
+import os
 from flask import Flask
 from app.config import load_configurations, configure_logging
-from .views import webhook_blueprint
-from .models import db # Import the db instance
+from app.routes import whatsapp_blueprint
+from app.models import db # Make sure this import is present
 
 def create_app():
     app = Flask(__name__)
 
-    # Load configurations and logging settings
+    # Load configurations
     load_configurations(app)
+
+    # Configure logging
     configure_logging()
 
-    # Initialize SQLAlchemy with the app
-    db.init_app(app)
+    # Initialize extensions
+    db.init_app(app) # This line is crucial for Flask-SQLAlchemy
 
-    # Import and register blueprints, if any
-    app.register_blueprint(webhook_blueprint)
+    # Register blueprints
+    app.register_blueprint(whatsapp_blueprint)
 
-    # --- NEW DATABASE TABLE CREATION ---
-    # This should ideally be handled by a migration tool (e.g., Flask-Migrate) in production
-    # For initial setup, we create tables if they don't exist within the application context.
+    # Create database tables if they don't exist
+    # This should be inside app context after db is initialized
     with app.app_context():
-        db.create_all()
-    # --- END NEW DATABASE TABLE CREATION ---
+        db.create_all() # This creates all tables defined in app/models.py
 
     return app
