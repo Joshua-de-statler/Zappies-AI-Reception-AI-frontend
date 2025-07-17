@@ -51,38 +51,24 @@ def generate_response(message_body, wa_id, name):
         # Check if there is already a thread_id for the wa_id
         thread_id = check_if_thread_exists(wa_id)
 
-        # If a thread doesn't exist, create one and store it
+        # Initialize the model using a supported name from your list
+        # We're choosing 'gemini-1.5-flash-latest' for its balance of speed and capability
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+
         if thread_id is None:
             logging.info(f"Creating new Gemini chat session for {name} with wa_id {wa_id}")
-            # For Gemini, a "thread" is more conceptual within your application.
-            # We'll just create a new model instance for a fresh chat session.
-            # We use the wa_id as the 'thread_id' in our local shelve for simplicity
-            # since Gemini's API doesn't have explicit 'thread' objects like OpenAI's Assistants.
-            # Instead, we send the entire conversation history with each turn for context.
-            # For simplicity here, we're starting a new chat if no 'thread_id' (wa_id in this case) is found.
-            # For a true continuous conversation, you'd load past messages from a persistent storage.
-            # For now, we'll store the wa_id itself to indicate an active session.
-            store_thread(wa_id, wa_id) # Store wa_id as its own "thread_id" placeholder
-            
-            # Initialize a new chat session for this user
-            model = genai.GenerativeModel('gemini-pro')
             chat = model.start_chat(history=[])
+            store_thread(wa_id, wa_id) # Store wa_id as its own "thread_id" placeholder
             logging.info(f"Started new chat session for {wa_id}")
-
         else:
             logging.info(f"Continuing Gemini chat session for {name} with wa_id {wa_id}")
-            # In a real-world scenario, you would load the conversation history for this wa_id
-            # from your persistent storage (e.g., a database) and pass it to model.start_chat(history=...).
-            # For this example, we'll start a fresh chat on each call if the 'thread_id' mechanism is purely
-            # for session tracking rather than full history retrieval.
-            # To simulate memory, we will include the previous user message.
-            model = genai.GenerativeModel('gemini-pro')
-            chat = model.start_chat(history=[]) # Initialize chat with empty history for this simplified example
+            # As noted previously, for true conversational memory, you would load the history here:
+            # e.g., chat = model.start_chat(history=load_history_for_user(wa_id))
+            chat = model.start_chat(history=[]) # Starting with empty history for simplicity
 
         # Send the user's message to the Gemini model
         logging.info(f"Sending message to Gemini for {name} ({wa_id}): {message_body}")
         
-        # This sends the message and gets the response
         response = chat.send_message(message_body)
         
         # Extract the text from the response

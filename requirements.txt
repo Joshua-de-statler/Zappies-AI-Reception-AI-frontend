@@ -2,5 +2,6 @@ flask
 python-dotenv
 aiohttp
 requests
-# google-genai
 google-generativeai
+Flask-SQLAlchemy
+psycopg2-binary
