@@ -1,7 +1,7 @@
 # app/routes.py
 from flask import Blueprint, request, jsonify, current_app
 import logging
-from app.utils.whatsapp_utils import process_whatsapp_message, is_valid_whatsapp_message
+from app.utils.whatsapp_utils import process_and_reply_to_whatsapp
 
 # Define the Blueprint
 whatsapp_blueprint = Blueprint("whatsapp", __name__)

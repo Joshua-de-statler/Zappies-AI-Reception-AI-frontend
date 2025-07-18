@@ -1,162 +1,158 @@
-# app/utils/whatsapp_utils.py
-
-import logging
-from flask import current_app, jsonify
-import json
+import os
 import requests
-from datetime import datetime
-import re
+import logging
+import shelve
+import time
+from dotenv import load_dotenv
 
-# Import the new database service
-from app.services import database_service
-# Import the Gemini service (if you uncommented it for AI)
-from app.services.gemini_service import generate_response as gemini_generate_response
+# Configure logging
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
+# Load environment variables from .env file
+load_dotenv()
 
-def log_http_response(response):
-    logging.info(f"Status: {response.status_code}")
-    logging.info(f"Content-type: {response.headers.get('content-type')}")
-    logging.info(f"Body: {response.text}")
+# Variables directly from your .env file
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+WHATSAPP_API_VERSION = os.getenv("VERSION", "v18.0") # Use your VERSION from .env, default to v18.0 if not found
 
+if not PHONE_NUMBER_ID:
+    logger.error("PHONE_NUMBER_ID not found in environment variables.")
+    raise ValueError("PHONE_NUMBER_ID is not set.")
+if not ACCESS_TOKEN:
+    logger.error("ACCESS_TOKEN not found in environment variables.")
+    raise ValueError("ACCESS_TOKEN is not set.")
 
-def get_text_message_input(recipient, text):
-    return json.dumps(
-        {
-            "messaging_product": "whatsapp",
-            "recipient_type": "individual",
-            "to": recipient,
-            "type": "text",
-            "text": {"preview_url": False, "body": text},
-        }
-    )
+# Import Gemini utility for AI response generation - NOW from gemini_service
+from app.services.gemini_service import generate_response # Adjusted path
 
+# --- Deduplication Logic ---
+def has_message_been_processed(message_id):
+    """
+    Checks if a message ID has already been processed within a recent time window.
+    This prevents duplicate responses due to webhook retries.
+    """
+    with shelve.open("processed_messages_db", writeback=True) as processed_shelf:
+        # Clean up old entries (e.g., older than 5 minutes = 300 seconds)
+        five_minutes_ago = time.time() - 300
+        keys_to_delete = [key for key, timestamp in processed_shelf.items() if timestamp < five_minutes_ago]
+        for key in keys_to_delete:
+            del processed_shelf[key]
+            logger.debug(f"Cleaned up old message ID: {key}")
 
-# Placeholder generate_response function (if AI is not yet active)
-# If you enable Gemini AI, this function will be replaced by gemini_generate_response
-def generate_response(message_body, wa_id, name):
-    # This is the placeholder function that will be used if Gemini is not configured.
-    # It simply converts the input text to uppercase.
-    return message_body.upper()
+        return message_id in processed_shelf
 
+def mark_message_as_processed(message_id):
+    """
+    Marks a message ID as processed with a timestamp.
+    """
+    with shelve.open("processed_messages_db") as processed_shelf:
+        processed_shelf[message_id] = time.time()
+        logger.info(f"Marked message ID as processed: {message_id}")
 
-def send_message(data):
+# --- WhatsApp Message Sending ---
+def send_whatsapp_message(to_wa_id, message_body):
+    """
+    Sends a text message to a WhatsApp user using Meta's Cloud API.
+    """
+    # Construct URL using your PHONE_NUMBER_ID and WHATSAPP_API_VERSION from .env
+    url = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}/{PHONE_NUMBER_ID}/messages"
     headers = {
-        "Content-type": "application/json",
-        "Authorization": f"Bearer {current_app.config['ACCESS_TOKEN']}",
+        # Use your ACCESS_TOKEN from .env
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_wa_id,
+        "type": "text",
+        "text": {"body": message_body},
     }
 
-    url = f"https://graph.facebook.com/{current_app.config['VERSION']}/{current_app.config['PHONE_NUMBER_ID']}/messages"
-
     try:
-        response = requests.post(
-            url, data=data, headers=headers, timeout=10 # You can increase this timeout for testing, e.g., 30
-        )
-        response.raise_for_status()  # Raises an HTTPError if the HTTP request returned an unsuccessful status code
-        log_http_response(response) # Log success response from WhatsApp API
-        return jsonify({"status": "success", "message": "Message sent"}), 200
-    except requests.Timeout:
-        logging.error("Timeout occurred while sending message")
-        return jsonify({"status": "error", "message": "Timeout occurred"}), 500
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Request failed: {e}")
-        return jsonify({"status": "error", "message": f"Failed to send message: {str(e)}"}), 500
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
+        logger.info(f"Message sent to {to_wa_id}: {message_body}")
+        logger.debug(f"WhatsApp API response: {response.json()}")
+        return True
+    except requests.exceptions.HTTPError as http_err:
+        logger.error(f"HTTP error occurred while sending WhatsApp message: {http_err} - {response.text}")
+        return False
+    except Exception as err:
+        logger.error(f"Other error occurred while sending WhatsApp message: {err}")
+        return False
 
-
-def process_text_for_whatsapp(text):
-    # Remove content within double brackets (e.g., 【...】)
-    pattern = r"【.*?】"
-    text = re.sub(pattern, "", text).strip()
-
-    # Pattern to find double asterisks including the word(s) in between
-    pattern = r"\*\*(.*?)\*\*"
-
-    # Replacement pattern with single asterisks
-    replacement = r"*\1*"
-
-    # Substitute occurrences of the pattern with the replacement
-    whatsapp_style_text = re.sub(pattern, replacement, text)
-
-    return whatsapp_style_text
-
-
-def process_whatsapp_message(body):
-    wa_id = body["entry"][0]["changes"][0]["value"]["contacts"][0]["wa_id"]
-    name = body["entry"][0]["changes"][0]["value"]["contacts"][0]["profile"]["name"]
-    message_timestamp = datetime.fromtimestamp(int(body["entry"][0]["changes"][0]["value"]["messages"][0]["timestamp"]))
-
-
-    message = body["entry"][0]["changes"][0]["value"]["messages"][0]
-    message_body = message["text"]["body"]
-
-    # --- Database Integration: User message & Conversation setup (happens first) ---
-    company = database_service.get_or_create_company()
-    company_id = company.id
-
-    whatsapp_user = database_service.get_or_create_whatsapp_user(wa_id, name, company_id)
-    user_id = whatsapp_user.id
-
-    conversation = database_service.get_or_create_conversation(user_id, company_id)
-    conversation_id = conversation.id
-
-    last_bot_message = database_service.Message.query.filter_by(
-        conversation_id=conversation_id,
-        sender_type='bot'
-    ).order_by(database_service.Message.timestamp.desc()).first()
-
-    user_message = database_service.record_message(
-        conversation_id=conversation_id,
-        sender_type='user',
-        content=message_body
-    )
-
-    if last_bot_message:
-        database_service.calculate_and_update_response_time(
-            last_bot_message.id, user_message.timestamp, company_id
-        )
-    # --- End Database Integration: User message & Conversation setup ---
-
-
-    # Conditional AI Integration:
-    if current_app.config.get("GOOGLE_API_KEY"): # Check if Gemini API key is set
-        response_text = gemini_generate_response(message_body, wa_id, name)
-    else:
-        response_text = generate_response(message_body, wa_id, name) # Placeholder function
-
-    response_text = process_text_for_whatsapp(response_text)
-
-    # --- NEW ORDER: Attempt to Send Message FIRST, THEN Record Bot Message ---
-    data_to_send = get_text_message_input(wa_id, response_text)
-    
-    # Attempt to send the message to WhatsApp
-    send_result = send_message(data_to_send) 
-
-    # Check if send_message returned an error response (Flask jsonify returns tuple)
-    if isinstance(send_result, tuple) and send_result[1] != 200:
-        logging.error(f"Failed to send message to WhatsApp. Status: {send_result[1] if isinstance(send_result, tuple) else 'unknown'}. Bot's intended message will still be recorded.")
-        # You could add more sophisticated error handling here (e.g., retry queue, status in DB)
-    else:
-        logging.info("Message successfully sent to WhatsApp API (initial response from API was OK).")
-
-    # Record Bot Message in DB (after attempting to send)
-    # This ensures we log the bot's response even if WhatsApp sending failed, for debugging.
-    bot_message = database_service.record_message(
-        conversation_id=conversation_id,
-        sender_type='bot',
-        content=response_text,
-        response_to_message_id=user_message.id # Link bot's response to the user's message
-    )
-    # --- End NEW ORDER ---
-
-
-def is_valid_whatsapp_message(body):
+# --- Main WhatsApp Message Processing Handler ---
+def process_and_reply_to_whatsapp(webhook_data):
     """
-    Check if the incoming webhook event has a valid WhatsApp message structure.
+    Parses the incoming Meta webhook data, handles deduplication,
+    generates AI response, and sends the message back to WhatsApp.
+    This function runs in a separate thread.
     """
-    return (
-        body.get("object")
-        and body.get("entry")
-        and body["entry"][0].get("changes")
-        and body["entry"][0]["changes"][0].get("value")
-        and body["entry"][0]["changes"][0]["value"].get("messages")
-        and body["entry"][0]["changes"][0]["value"]["messages"][0]
-    )
+    try:
+        # This is a common structure for Meta WhatsApp webhooks.
+        # You might need to adjust this based on your actual payload if it differs.
+        entry = webhook_data['entry'][0]
+        change = entry['changes'][0]
+        value = change['value']
+        
+        # Check if it's a message event
+        if 'messages' in value:
+            for message_obj in value['messages']:
+                message_type = message_obj.get('type')
+                
+                # We are primarily interested in text messages from users
+                if message_type == 'text':
+                    wa_id = message_obj['from'] # User's WhatsApp ID
+                    message_body = message_obj['text']['body'] # The text content
+                    message_id = message_obj['id'] # Unique message ID from Meta
+                    
+                    # You might need to retrieve the user's name from Meta's API or
+                    # use a placeholder if not available in the webhook directly.
+                    name = value.get('contacts', [{}])[0].get('profile', {}).get('name', 'WhatsApp User')
+
+                    logger.info(f"Processing incoming message from {name} ({wa_id}): {message_body} (ID: {message_id})")
+
+                    # --- Deduplication Check ---
+                    if has_message_been_processed(message_id):
+                        logger.warning(f"Message ID {message_id} already processed. Skipping.")
+                        return # Stop processing this duplicate message
+
+                    # Mark message as processed BEFORE generating response
+                    mark_message_as_processed(message_id)
+
+                    # --- Generate AI Response ---
+                    ai_response_text = generate_response(message_body, wa_id, name)
+                    
+                    # --- Send Response Back to WhatsApp ---
+                    if ai_response_text:
+                        success = send_whatsapp_message(wa_id, ai_response_text)
+                        if not success:
+                            logger.error(f"Failed to send AI response to {wa_id}.")
+                        else:
+                            logger.info(f"Successfully sent AI response to {wa_id}.")
+                    else:
+                        logger.warning(f"No AI response generated for {wa_id}.")
+
+                elif message_type == 'referral':
+                    logger.info(f"Received referral message: {message_obj}")
+                elif message_type == 'reaction':
+                    logger.info(f"Received reaction message: {message_obj}")
+                elif message_type == 'image' or message_type == 'video' or message_type == 'document':
+                    logger.info(f"Received media message (type: {message_type}): {message_obj}")
+                    send_whatsapp_message(message_obj['from'], "I can't currently process images or videos. Please tell me in text how I can help!")
+                else:
+                    logger.info(f"Received unhandled message type: {message_type} - {message_obj}")
+                    send_whatsapp_message(message_obj['from'], "I received your message, but I'm currently set up to respond mainly to text messages. Could you please rephrase your query in text?")
+        
+        # Handle 'statuses' for message delivery notifications (optional)
+        elif 'statuses' in value:
+            status = value['statuses'][0]
+            logger.info(f"Message status update for ID {status['id']}: {status['status']} - {status.get('errors')}")
+
+    except IndexError:
+        logger.error(f"Malformed webhook data received: {webhook_data}. Skipping processing.")
+    except Exception as e:
+        logger.error(f"Unhandled error in process_and_reply_to_whatsapp: {e}", exc_info=True)
