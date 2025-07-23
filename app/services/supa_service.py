@@ -7,7 +7,6 @@ logger = logging.getLogger(__name__)
 
 # Initialize Supabase client globally
 try:
-    # These still need to be set as separate variables in Railway
     SUPABASE_URL = os.environ.get("SUPABASE_URL")
     SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
@@ -28,12 +27,14 @@ except Exception as e:
 def save_message_to_db(sender_id: str, sender_type: str, message_content: str):
     """
     Saves a message to the 'messages' table in Supabase.
+    The message content will be stored in the 'content' column.
     """
     try:
+        # Table name is 'messages', column name is 'content'
         data, count = supabase.table('messages').insert({
             'sender_id': sender_id,
             'sender_type': sender_type,
-            'message_content': message_content
+            'content': message_content # Changed column name to 'content'
         }).execute()
         logger.info(f"Message saved to DB: {data}")
     except Exception as e:
@@ -45,11 +46,12 @@ def get_previous_messages(sender_id: str, limit: int = 5):
     Orders by timestamp descending and limits the result.
     """
     try:
+        # Table name is 'messages'
         response = supabase.table('messages').select("*").eq(
             'sender_id', sender_id
         ).order('timestamp', desc=True).limit(limit).execute()
 
-        # The data is in response.data
+        # The data is in response.data, and the relevant message content will be in the 'content' field
         messages = response.data
         logger.info(f"Retrieved {len(messages)} previous messages for {sender_id}.")
         return messages[::-1] # Return in chronological order
