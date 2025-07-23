@@ -2,7 +2,7 @@ import os
 from flask import Flask
 from app.config import load_configurations, configure_logging
 from app.models import db # Import the SQLAlchemy database instance
-from app.views import webhook_blueprint # Import the blueprint where your webhook routes are defined
+# from app.views import webhook_blueprint # Import the blueprint where your webhook routes are defined
 
 def create_app():
     """
