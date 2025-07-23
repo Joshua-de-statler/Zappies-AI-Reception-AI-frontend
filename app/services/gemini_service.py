@@ -119,7 +119,7 @@ Zappies isn't just a tool. It's a powerful sales growth engine powered by intell
 """
 
 class GeminiService:
-    def init(self):
+    def init(self): # <--- CORRECTED: Two underscores before and after init
         try:
             google_api_key = os.getenv("GOOGLE_API_KEY")
             if not google_api_key:
