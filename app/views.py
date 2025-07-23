@@ -8,7 +8,7 @@ import json # Import json for parsing the JSON
 # Import your services
 from app.services.gemini_service import GeminiService
 from app.utils.whatsapp_utils import send_whatsapp_message
-from app.database import supabase_init # You might need this if you initialize supabase here
+# from app.database import supabase_init # You might need this if you initialize supabase here
 from app.services.supa_service import save_message_to_db, get_previous_messages # Import Supabase service functions
 from app.services.meeting_service import parse_gemini_meeting_response, handle_meeting_request # Import new meeting service functions
 
