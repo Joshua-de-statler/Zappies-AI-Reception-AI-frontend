@@ -22,8 +22,7 @@ try:
 
 except Exception as e:
     logger.exception(f"Error initializing Supabase client: {e}")
-    # For a worker boot failure, re-raising makes sense here.
-    raise
+    raise # Re-raise to prevent the worker from booting if Supabase connection fails
 
 def save_message_to_db(sender_id: str, sender_type: str, message_content: str):
     """
