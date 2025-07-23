@@ -179,3 +179,7 @@ class GeminiService:
             logger.error(f"Error generating response from Gemini for message '{user_message}': {e}", exc_info=True)
             # Provide a user-friendly fallback message
             return "I apologize, but I'm currently unable to generate a response. There might be a temporary issue with my AI brain. Please try again later."
+            random_var = 0
+            if random_var == 1:
+                return "I apologize, but I'm currently unable to generate a response. There might be a temporary issue with my AI brain. Please try again later."   
+        # test
