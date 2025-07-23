@@ -1,50 +1,22 @@
-# app/routes.py
-from flask import Blueprint, request, jsonify, current_app
-import logging
-from app.utils.whatsapp_utils import process_and_reply_to_whatsapp
+# app/routes.py (Complete and Final Version)
+from flask import Blueprint
+# Import the webhook_blueprint from views.py
+from app.views import webhook_blueprint
 
-# Define the Blueprint
-whatsapp_blueprint = Blueprint("whatsapp", __name__)
+# Create a top-level blueprint for your main application routes.
+# This acts as an aggregator for other, more specific blueprints.
+main_routes_blueprint = Blueprint("main_routes", __name__)
 
-@whatsapp_blueprint.route("/webhook", methods=["GET"])
-def verify_webhook():
-    """
-    Handles the webhook verification request from Facebook.
-    """
-    logging.info("Verifying webhook")
-    VERIFY_TOKEN = current_app.config["VERIFY_TOKEN"] # Access VERIFY_TOKEN from app config
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
+# Register the webhook blueprint onto this main blueprint.
+# This means /webhook routes will be accessible through main_routes_blueprint.
+main_routes_blueprint.register_blueprint(webhook_blueprint)
 
-    if mode and token:
-        if mode == "subscribe" and token == VERIFY_TOKEN:
-            logging.info("WEBHOOK_VERIFIED")
-            return challenge, 200
-        else:
-            logging.info("VERIFICATION_FAILED: Token mismatch")
-            return jsonify({"status": "error", "message": "Verification failed"}), 403
-    logging.info("VERIFICATION_FAILED: Missing parameters")
-    return jsonify({"status": "error", "message": "Missing parameters"}), 400
+# If you had other blueprints (e.g., for user authentication, admin panel),
+# you would register them here as well:
+# from app.auth import auth_blueprint
+# main_routes_blueprint.register_blueprint(auth_blueprint, url_prefix='/auth')
 
-
-@whatsapp_blueprint.route("/webhook", methods=["POST"])
-def webhook_post():
-    """
-    Handles incoming webhook events from WhatsApp.
-    """
-    body = request.get_json()
-    logging.info(f"Received webhook event: {body}")
-
-    # Check if it's a valid WhatsApp message event
-    if is_valid_whatsapp_message(body):
-        try:
-            process_whatsapp_message(body)
-            return jsonify({"status": "success"}), 200
-        except Exception as e:
-            logging.error(f"Error processing message: {e}")
-            return jsonify({"status": "error", "message": str(e)}), 500
-    else:
-        # Not a WhatsApp message event (could be a status update, etc.)
-        logging.info("Not a valid WhatsApp message event, ignoring.")
-        return jsonify({"status": "ignored", "message": "Not a valid WhatsApp message event"}), 200
+# This `main_routes_blueprint` will then be registered in app/__init__.py
+# (though currently app/__init__.py directly registers webhook_blueprint).
+# For now, if app/__init__.py directly registers webhook_blueprint, this file
+# might serve as a placeholder for future route organization.

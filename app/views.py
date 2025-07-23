@@ -1,90 +1,52 @@
-import logging
-import json
+# app/views.py
 
 from flask import Blueprint, request, jsonify, current_app
+import logging
+import os
+import json
 
-from .decorators.security import signature_required
-from .utils.whatsapp_utils import (
+# Import the necessary utility functions from whatsapp_utils
+from app.utils.whatsapp_utils import (
     process_whatsapp_message,
-    is_valid_whatsapp_message,
+    get_whatsapp_message_type # Changed from is_valid_whatsapp_message
 )
 
-webhook_blueprint = Blueprint("webhook", __name__)
+webhook_blueprint = Blueprint('webhook', __name__)
+logger = logging.getLogger(__name__)
 
+# --- Webhook for WhatsApp incoming messages ---
+@webhook_blueprint.route('/webhook', methods=['GET', 'POST'])
+def webhook():
+    if request.method == 'GET':
+        # VERIFICATION request from Facebook/Meta
+        mode = request.args.get("hub.mode")
+        token = request.args.get("hub.verify_token")
+        challenge = request.args.get("hub.challenge")
 
-def handle_message():
-    """
-    Handle incoming webhook events from the WhatsApp API.
+        VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
-    This function processes incoming WhatsApp messages and other events,
-    such as delivery statuses. If the event is a valid message, it gets
-    processed. If the incoming payload is not a recognized WhatsApp event,
-    an error is returned.
+        if mode and token:
+            if mode == "subscribe" and token == VERIFY_TOKEN:
+                logger.info("WEBHOOK_VERIFIED")
+                return challenge, 200
+            else:
+                logger.warning("Webhook verification failed: Invalid token or mode.")
+                return "Verification token mismatch", 403
+        logger.warning("Webhook verification failed: Missing parameters.")
+        return "Missing parameters", 400
 
-    Every message send will trigger 4 HTTP requests to your webhook: message, sent, delivered, read.
+    elif request.method == 'POST':
+        # INCOMING MESSAGE or STATUS UPDATE from Facebook/Meta
+        data = request.get_json()
+        logger.info(f"Received webhook data: {json.dumps(data, indent=2)}")
 
-    Returns:
-        response: A tuple containing a JSON response and an HTTP status code.
-    """
-    body = request.get_json()
-    # logging.info(f"request body: {body}")
+        try:
+            # Process the WhatsApp data (can be a message or a status update)
+            status_message, status_code = process_whatsapp_message(data)
+            logger.info(f"Webhook processing complete: {status_message}")
+            return jsonify({"status": status_message}), status_code
+        except Exception as e:
+            logger.exception(f"Error during webhook processing: {e}")
+            return jsonify({"status": "error", "message": "Internal server error"}), 500
 
-    # Check if it's a WhatsApp status update
-    if (
-        body.get("entry", [{}])[0]
-        .get("changes", [{}])[0]
-        .get("value", {})
-        .get("statuses")
-    ):
-        logging.info("Received a WhatsApp status update.")
-        return jsonify({"status": "ok"}), 200
-
-    try:
-        if is_valid_whatsapp_message(body):
-            process_whatsapp_message(body)
-            return jsonify({"status": "ok"}), 200
-        else:
-            # if the request is not a WhatsApp API event, return an error
-            return (
-                jsonify({"status": "error", "message": "Not a WhatsApp API event"}),
-                404,
-            )
-    except json.JSONDecodeError:
-        logging.error("Failed to decode JSON")
-        return jsonify({"status": "error", "message": "Invalid JSON provided"}), 400
-
-
-# Required webhook verifictaion for WhatsApp
-def verify():
-    # Parse params from the webhook verification request
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-    # Check if a token and mode were sent
-    if mode and token:
-        # Check the mode and token sent are correct
-        if mode == "subscribe" and token == current_app.config["VERIFY_TOKEN"]:
-            # Respond with 200 OK and challenge token from the request
-            logging.info("WEBHOOK_VERIFIED")
-            return challenge, 200
-        else:
-            # Responds with '403 Forbidden' if verify tokens do not match
-            logging.info("VERIFICATION_FAILED")
-            return jsonify({"status": "error", "message": "Verification failed"}), 403
-    else:
-        # Responds with '400 Bad Request' if verify tokens do not match
-        logging.info("MISSING_PARAMETER")
-        return jsonify({"status": "error", "message": "Missing parameters"}), 400
-
-
-@webhook_blueprint.route("/webhook", methods=["GET"])
-def webhook_get():
-    return verify()
-
-@webhook_blueprint.route("/webhook", methods=["POST"])
-@signature_required
-def webhook_post():
-    return handle_message()
-
-
-# ngrok http 8000 --url=anchovy-united-seriously.ngrok-free.app
+    return jsonify({"status": "Method not allowed"}), 405

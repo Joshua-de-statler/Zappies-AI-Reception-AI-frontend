@@ -1,29 +1,14 @@
 import google.generativeai as genai
-import shelve
-from dotenv import load_dotenv
-import os
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import logging
+import os # Make sure to import os to access environment variables
 
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# Configure logging for this module
 logger = logging.getLogger(__name__)
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Configure the Gemini API key - matches your .env 'GEMINI_API_KEY'
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-if not GEMINI_API_KEY:
-    logger.error("GEMINI_API_KEY not found in environment variables. Please set it in your .env file.")
-    raise ValueError("GEMINI_API_KEY is not set.")
-
-genai.configure(api_key=GEMINI_API_KEY)
-
-# --- START: Your Zappies AI Sales Agent Training Guide as System Instruction ---
-# This entire multiline string will be the system instruction for the AI.
-ZAPIES_SALES_AGENT_SYSTEM_INSTRUCTION = """
+# --- Zappies AI Sales Agent Persona ---
+# This extensive string defines the AI's role, tone, objectives, and knowledge base.
+ZAPPIES_AI_SALES_AGENT_PERSONA = """
 You are Zappies AI Sales Agent. Your primary goal is to help businesses close more leads, generate more revenue, and save time by automating sales conversations across Instagram, WhatsApp, and Facebook using intelligent AI bots.
 
 **Your Voice & Tone:**
@@ -32,6 +17,7 @@ You are Zappies AI Sales Agent. Your primary goal is to help businesses close mo
 - Supportive, clear, and consultative - not pushy
 - Show the "why it matters" behind every feature
 - Confident and concise
+- Use simple, short and relatable language - no jargon
 
 **Your Objective:** Drive measurable results for the visitor:
 - Help them uncover hidden bottlenecks in their lead conversion process
@@ -72,6 +58,7 @@ You are Zappies AI Sales Agent. Your primary goal is to help businesses close mo
 - **Recognize Hesitation/Skepticism:** Offer the free audit as a low-commitment, high-value step.
 - **Spot Buying Intent:** If they ask about "price," "demo," "how to start," smoothly guide them to a CTA (form/booking) with a clear benefit.
 - **Acknowledge and Validate:** Show empathy for their challenges.
+- **Try and keep the messages short and to the point.** 
 
 **Objection Handling (Examples):**
 - "No time?" -> You get time back; we handle busywork.
@@ -97,76 +84,57 @@ You are Zappies AI Sales Agent. Your primary goal is to help businesses close mo
 **Final Positioning:**
 Zappies isn't just a tool. It's a powerful sales growth engine powered by intelligent AI. Your role is to show the visitor what they're missing and lead them toward a simple 'yes' by connecting pain with payoff. Our goal is to help businesses unlock hidden revenue potential and scale their sales effortlessly.
 """
-# --- END: Your Zappies AI Sales Agent Training Guide as System Instruction ---
 
+class GeminiService:
+    def __init__(self):
+        try:
+            # Ensure your GOOGLE_API_KEY is set as an environment variable
+            google_api_key = os.getenv("GOOGLE_API_KEY")
+            if not google_api_key:
+                logger.error("GOOGLE_API_KEY environment variable not set.")
+                raise ValueError("GOOGLE_API_KEY is missing.")
 
-# Use context manager to ensure the shelf file is closed properly
-def check_if_thread_exists(wa_id):
-    """
-    Checks if a conversation thread exists for a given WhatsApp ID.
-    Returns the thread ID if it exists, otherwise None.
-    """
-    with shelve.open("gemini_threads_db") as threads_shelf:
-        return threads_shelf.get(wa_id, None)
+            genai.configure(api_key=google_api_key)
 
-def store_thread(wa_id, thread_id):
-    """
-    Stores a new conversation thread ID for a given WhatsApp ID.
-    """
-    with shelve.open("gemini_threads_db") as threads_shelf:
-        threads_shelf[wa_id] = thread_id
-        logger.info(f"Stored new thread for WA_ID: {wa_id}, Thread ID: {thread_id}")
+            # Initialize the GenerativeModel with the specified model and system instruction
+            self.model = genai.GenerativeModel(
+                'gemini-1.5-flash-latest', # Using the model confirmed to be available
+                system_instruction=ZAPPIES_AI_SALES_AGENT_PERSONA
+            )
 
-def delete_thread(wa_id):
-    """
-    Deletes a conversation thread for a given WhatsApp ID.
-    """
-    with shelve.open("gemini_threads_db") as threads_shelf:
-        if wa_id in threads_shelf:
-            del threads_shelf[wa_id]
-            logger.info(f"Deleted thread for WA_ID: {wa_id}")
+            # Start a new chat session. The chat history will adhere to the persona.
+            self.chat = self.model.start_chat(history=[])
 
-def generate_response(message_body, wa_id, name):
-    """
-    Generates a response using the Gemini API, maintaining conversation history.
-    """
-    try:
-        # Check if there is already a thread_id for the wa_id
-        thread_id = check_if_thread_exists(wa_id)
+            # Define safety settings to control content generation behavior
+            self.safety_settings = {
+                HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+                HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+            }
+            logger.info("GeminiService initialized with 'gemini-1.5-flash-latest' and Zappies persona.")
+        except Exception as e:
+            logger.exception(f"Error initializing GeminiService: {e}") # Use exception for full traceback
+            raise # Re-raise to indicate a critical setup failure
 
-        # Initialize the model with the system instruction
-        model = genai.GenerativeModel(
-            'gemini-1.5-flash-latest',
-            system_instruction=ZAPIES_SALES_AGENT_SYSTEM_INSTRUCTION
-        )
+    def generate_response(self, user_message: str) -> str:
+        """
+        Generates a response from the Gemini model based on the user's message
+        and the predefined Zappies persona.
+        """
+        try:
+            # Send the user message to the chat model, applying safety settings
+            response = self.chat.send_message(user_message, safety_settings=self.safety_settings)
 
-        # For true conversational memory, you would load/save history here.
-        # Current implementation starts a new chat history each time, but the
-        # system_instruction ensures the persona is consistent.
-        # To implement persistent history, you would need:
-        # 1. A way to store the full `chat.history` (list of `genai.types.Content` objects).
-        # 2. `load_history_for_user(wa_id)` and `save_history_for_user(wa_id, history)` functions.
-        # chat = model.start_chat(history=load_history_for_user(wa_id) if thread_id else [])
-        
-        chat = model.start_chat(history=[]) # Keeping it simple for now, but note this limitation
+            # Access the generated text from the response
+            if response.text:
+                logger.info(f"Gemini response generated successfully for message: '{user_message}'")
+                return response.text
+            else:
+                logger.warning(f"Gemini returned an empty response for message: '{user_message}'")
+                return "I'm sorry, I couldn't generate a specific response at this moment. Can you please rephrase or ask something else?"
 
-        if thread_id is None:
-            logger.info(f"Creating new Gemini chat session for {name} with wa_id {wa_id}")
-            store_thread(wa_id, wa_id) # Store wa_id as its own "thread_id" placeholder
-        else:
-            logger.info(f"Continuing Gemini chat session for {name} with wa_id {wa_id}")
-
-        logger.info(f"Sending message to Gemini for {name} ({wa_id}): {message_body}")
-        
-        response = chat.send_message(message_body)
-        
-        generated_message = response.text
-        logger.info(f"Generated message from Gemini: {generated_message}")
-
-        return generated_message
-
-    except Exception as e:
-        logger.error(f"Error communicating with Gemini API: {e}")
-        # Optionally, delete the thread on error to allow a fresh start next time
-        # delete_thread(wa_id) # Uncomment if you want to reset session on error
-        return "Sorry, I'm having trouble connecting to the AI at the moment. Please try again later."
+        except Exception as e:
+            logger.error(f"Error generating response from Gemini for message '{user_message}': {e}", exc_info=True)
+            # Provide a user-friendly fallback message
+            return "I apologize, but I'm currently unable to generate a response. There might be a temporary issue with my AI brain. Please try again later."

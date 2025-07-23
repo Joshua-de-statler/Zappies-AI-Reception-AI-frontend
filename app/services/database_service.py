@@ -1,128 +1,247 @@
-# app/services/database_service.py
-
-from app.models import db, Company, WhatsappUser, Conversation, Message, BotStatistic, ConversionEvent
-from datetime import datetime, timedelta
 import logging
+from datetime import datetime
+from sqlalchemy.exc import SQLAlchemyError
+from app.models import db, Company, WhatsAppUser, Conversation, Message, ConversionEvent, BotStatistic # Ensure all models are imported
 
-# --- Company Management ---
-def get_or_create_company(company_name="Zappies AI Default"):
-    """
-    Retrieves a company by name or creates it if it doesn't exist.
-    For now, we'll use a default company name.
-    """
-    company = Company.query.filter_by(name=company_name).first()
-    if not company:
-        company = Company(name=company_name)
-        db.session.add(company)
+logger = logging.getLogger(__name__)
+
+# --- Helper Function for Safe Commit ---
+def commit_safely():
+    """Commits the current session and handles exceptions, rolling back on failure."""
+    try:
         db.session.commit()
-        logging.info(f"Created new company: {company.name} with ID: {company.id}")
-    return company
+        return True
+    except SQLAlchemyError as e:
+        db.session.rollback() # Rollback changes if commit fails
+        logger.error(f"Database commit failed: {e}", exc_info=True)
+        return False
 
-# --- User and Conversation Management ---
-def get_or_create_whatsapp_user(wa_id, name, company_id):
-    """
-    Retrieves a WhatsApp user by wa_id or creates them if they don't exist.
-    Updates last_interaction_at if user exists.
-    """
-    user = WhatsappUser.query.filter_by(wa_id=wa_id).first()
-    if not user:
-        user = WhatsappUser(wa_id=wa_id, company_id=company_id, name=name)
-        db.session.add(user)
-        db.session.commit()
-        logging.info(f"Created new WhatsApp user: {name} ({wa_id})")
-        # Also increment num_recipients for the company
-        update_bot_statistics(company_id, new_recipient=True)
-    else:
-        # Update last interaction time
-        user.last_interaction_at = datetime.utcnow()
-        db.session.commit()
-    return user
+# --- Company Operations ---
+def get_or_create_company(name: str):
+    """Gets an existing company by name or creates a new one."""
+    try:
+        company = Company.query.filter_by(name=name).first()
+        if not company:
+            company = Company(name=name, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+            db.session.add(company)
+            if not commit_safely():
+                logger.error(f"Failed to save new company '{name}' after add.")
+                return None # Return None if commit failed
+            logger.info(f"Created new company: {name} (ID: {company.id})")
+        return company
+    except SQLAlchemyError as e:
+        logger.error(f"Error getting or creating company '{name}': {e}", exc_info=True)
+        db.session.rollback() # Rollback in case of query error
+        return None
 
-def get_or_create_conversation(user_id, company_id):
+def get_or_create_default_company():
     """
-    Retrieves the most recent active conversation for a user, or creates a new one.
-    A conversation is considered active if it hasn't been explicitly closed.
-    For simplicity, we'll assume a conversation is active if its end_time is NULL.
-    In a real app, you might have a more complex logic (e.g., timeout after X minutes of inactivity).
+    Convenience function to get or create the main company for the bot.
+    You might adjust 'My Bot Company' to a more specific name if preferred.
     """
-    conversation = Conversation.query.filter_by(user_id=user_id, company_id=company_id, status='active') \
-                                     .order_by(Conversation.start_time.desc()).first()
-    if not conversation:
-        conversation = Conversation(user_id=user_id, company_id=company_id)
-        db.session.add(conversation)
-        db.session.commit()
-        logging.info(f"Created new conversation for user {user_id}")
-    return conversation
+    return get_or_create_company(name="My Bot Company")
 
-def record_message(conversation_id, sender_type, content, response_to_message_id=None):
-    """
-    Records a message in the database.
-    """
-    message = Message(
-        conversation_id=conversation_id,
-        sender_type=sender_type,
-        content=content,
-        response_to_message_id=response_to_message_id
-    )
-    db.session.add(message)
-    db.session.commit()
-    logging.info(f"Recorded message from {sender_type} in conversation {conversation_id}")
-    return message
+# --- WhatsApp User Operations ---
+def get_or_create_whatsapp_user(wa_id: str, name: str, company_id: int):
+    """Gets an existing WhatsApp user by WA ID and company_id or creates a new one."""
+    try:
+        user = WhatsAppUser.query.filter_by(wa_id=wa_id, company_id=company_id).first()
+        if not user:
+            user = WhatsAppUser(wa_id=wa_id, name=name, company_id=company_id, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+            db.session.add(user)
+            if not commit_safely():
+                logger.error(f"Failed to save new WhatsApp user '{wa_id}' after add.")
+                return None
+            logger.info(f"Created new WhatsApp user: {name} ({wa_id}) (ID: {user.id})")
+        else:
+            # Optionally update user name if it has changed
+            if user.name != name:
+                user.name = name
+                user.updated_at = datetime.utcnow()
+                commit_safely() # Commit update to name/timestamp
+        return user
+    except SQLAlchemyError as e:
+        logger.error(f"Error getting or creating WhatsApp user '{wa_id}': {e}", exc_info=True)
+        db.session.rollback()
+        return None
 
-# --- Statistics Tracking ---
-def update_bot_statistics(company_id, conversions_delta=0, user_response_time_delta=0.0, is_user_response=False, new_recipient=False):
-    """
-    Updates the aggregate bot statistics for a given company.
-    """
-    stats = BotStatistic.query.filter_by(company_id=company_id).first()
-    if not stats:
-        stats = BotStatistic(company_id=company_id)
-        db.session.add(stats)
-        db.session.commit()
-        logging.info(f"Created new BotStatistic entry for company {company_id}")
+# --- Conversation Operations ---
+def get_or_create_conversation(user_id: int, company_id: int):
+    """Gets the active conversation for a user within a company or creates a new one."""
+    try:
+        # Assuming one active conversation per user for simplicity.
+        # If you need multiple simultaneous conversations, this logic would need expansion.
+        conversation = Conversation.query.filter_by(user_id=user_id, company_id=company_id, status='active').first()
+        if not conversation:
+            conversation = Conversation(
+                user_id=user_id,
+                company_id=company_id,
+                started_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+                status='active'
+            )
+            db.session.add(conversation)
+            if not commit_safely():
+                logger.error(f"Failed to save new conversation for user ID '{user_id}' after add.")
+                return None
+            logger.info(f"Created new conversation (ID: {conversation.id}) for user ID: {user_id}")
+        else:
+            # Update timestamp for existing active conversation
+            conversation.updated_at = datetime.utcnow()
+            commit_safely()
+        return conversation
+    except SQLAlchemyError as e:
+        logger.error(f"Error getting or creating conversation for user ID '{user_id}': {e}", exc_info=True)
+        db.session.rollback()
+        return None
 
-    stats.conversions += conversions_delta
-    
-    if is_user_response:
-        stats.total_user_response_time += user_response_time_delta
-        stats.user_response_count += 1
-    
-    if new_recipient:
-        stats.num_recipients += 1
-    
-    db.session.commit()
-    logging.info(f"Updated bot statistics for company {company_id}")
+def update_conversation_status(conversation_id: int, status: str):
+    """Updates the status of a conversation (e.g., 'active', 'closed')."""
+    try:
+        conversation = Conversation.query.get(conversation_id)
+        if conversation:
+            conversation.status = status
+            conversation.updated_at = datetime.utcnow()
+            if not commit_safely():
+                return False
+            logger.info(f"Updated conversation {conversation_id} status to '{status}'.")
+            return True
+        logger.warning(f"Conversation with ID {conversation_id} not found for status update.")
+        return False
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating conversation {conversation_id} status: {e}", exc_info=True)
+        db.session.rollback()
+        return False
 
-def record_conversion_event(conversation_id, user_id, company_id, event_type, details=None, sales_agent_id=None):
-    """
-    Records a specific conversion event.
-    """
-    event = ConversionEvent(
-        conversation_id=conversation_id,
-        user_id=user_id,
-        company_id=company_id,
-        event_type=event_type,
-        details=details,
-        sales_agent_id=sales_agent_id
-    )
-    db.session.add(event)
-    db.session.commit()
-    logging.info(f"Recorded conversion event: {event_type} for conversation {conversation_id}")
-    # Also update aggregate conversion count
-    # You might want to be more nuanced here based on your conversion definition
-    # For now, every conversion event increments the aggregate.
-    update_bot_statistics(company_id, conversions_delta=1)
+# --- Message Operations ---
+def record_message(conversation_id: int, sender_type: str, content: str, response_to_message_id: int = None):
+    """Records an incoming (user) or outgoing (bot) message."""
+    try:
+        message = Message(
+            conversation_id=conversation_id,
+            sender_type=sender_type, # Expected: 'user' or 'bot'
+            content=content,
+            response_to_message_id=response_to_message_id, # Links bot response to user's message
+            timestamp=datetime.utcnow()
+        )
+        db.session.add(message)
+        if not commit_safely():
+            logger.error(f"Failed to save {sender_type} message for conversation '{conversation_id}' after add.")
+            return None
+        logger.info(f"Recorded {sender_type} message for conversation {conversation_id}: '{content[:50]}...'")
+        return message
+    except SQLAlchemyError as e:
+        logger.error(f"Error recording {sender_type} message for conversation ID '{conversation_id}': {e}", exc_info=True)
+        db.session.rollback()
+        return None
 
-def calculate_and_update_response_time(bot_message_id, user_message_timestamp, company_id):
+def get_conversation_history_for_gemini(conversation_id: int) -> list:
     """
-    Calculates the time taken for a user to respond to a specific bot message
-    and updates the overall bot statistics.
+    Retrieves messages for a given conversation and formats them
+    into a list of dictionaries suitable for Gemini's chat history.
+    Gemini expects roles 'user' and 'model'.
     """
-    bot_message = Message.query.get(bot_message_id)
-    if bot_message and bot_message.sender_type == 'bot':
-        response_time_seconds = (user_message_timestamp - bot_message.timestamp).total_seconds()
-        if response_time_seconds > 0: # Only count positive response times
-            update_bot_statistics(company_id, user_response_time_delta=response_time_seconds, is_user_response=True)
-            logging.info(f"Calculated user response time: {response_time_seconds:.2f}s")
-    else:
-        logging.warning(f"Could not find bot message with ID {bot_message_id} or it was not sent by bot.")
+    history = []
+    try:
+        # Query messages for the conversation, ordered by timestamp
+        messages = Message.query.filter_by(conversation_id=conversation_id)\
+                                .order_by(Message.timestamp.asc())\
+                                .all()
+        for msg in messages:
+            # Map our sender_type to Gemini's expected role ('user' or 'model')
+            gemini_role = 'user' if msg.sender_type == 'user' else 'model'
+            history.append({'role': gemini_role, 'parts': [msg.content]})
+        logger.debug(f"Fetched {len(history)} messages for conversation {conversation_id} for Gemini history.")
+    except SQLAlchemyError as e:
+        logger.error(f"Error fetching conversation history for Gemini (conversation ID: {conversation_id}): {e}", exc_info=True)
+        db.session.rollback() # Rollback if error occurred during query
+        return [] # Return empty history on error, so generate_response doesn't fail
+    return history
+
+# --- Conversion Event Operations ---
+def record_conversion_event(conversation_id: int, event_type: str, details: dict = None):
+    """Records a specific conversion event within a conversation."""
+    try:
+        event = ConversionEvent(
+            conversation_id=conversation_id,
+            event_type=event_type,
+            details=details, # This column is JSON, so dicts are fine
+            timestamp=datetime.utcnow()
+        )
+        db.session.add(event)
+        if not commit_safely():
+            logger.error(f"Failed to save conversion event '{event_type}' for conversation '{conversation_id}'.")
+            return None
+        logger.info(f"Recorded conversion event '{event_type}' for conversation {conversation_id}.")
+        return event
+    except SQLAlchemyError as e:
+        logger.error(f"Error recording conversion event for conversation {conversation_id}: {e}", exc_info=True)
+        db.session.rollback()
+        return None
+
+# --- Bot Statistics Operations ---
+def get_bot_statistic_for_company(company_id: int):
+    """Retrieves or initializes bot statistics for a given company."""
+    try:
+        stats = BotStatistic.query.filter_by(company_id=company_id).first()
+        if not stats:
+            stats = BotStatistic(company_id=company_id, total_messages=0, total_recipients=0, total_conversions=0, avg_response_time_ms=0, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+            db.session.add(stats)
+            commit_safely()
+            logger.info(f"Initialized bot statistics for company ID: {company_id}.")
+        return stats
+    except SQLAlchemyError as e:
+        logger.error(f"Error getting or creating bot statistics for company {company_id}: {e}", exc_info=True)
+        db.session.rollback()
+        return None
+
+def update_bot_statistic_conversions(company_id: int):
+    """Increments the total conversions count for a company's bot statistics."""
+    try:
+        stats = get_bot_statistic_for_company(company_id)
+        if stats:
+            stats.total_conversions += 1
+            stats.updated_at = datetime.utcnow()
+            commit_safely()
+            logger.info(f"Updated bot statistics: conversions for company {company_id}.")
+            return True
+        return False
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating bot statistics conversions for company {company_id}: {e}", exc_info=True)
+        db.session.rollback()
+        return False
+
+def update_bot_statistic_response_time(company_id: int, response_time_ms: float):
+    """Updates the average response time for a company's bot statistics."""
+    try:
+        stats = get_bot_statistic_for_company(company_id)
+        if stats:
+            # Simple average update (consider a more robust rolling average for production)
+            current_total_time = stats.avg_response_time_ms * stats.total_messages
+            stats.total_messages += 1 # Assuming a message is responded to
+            stats.avg_response_time_ms = (current_total_time + response_time_ms) / stats.total_messages if stats.total_messages > 0 else response_time_ms
+            stats.updated_at = datetime.utcnow()
+            commit_safely()
+            logger.info(f"Updated bot statistics: response time for company {company_id}.")
+            return True
+        return False
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating bot statistics response time for company {company_id}: {e}", exc_info=True)
+        db.session.rollback()
+        return False
+
+def update_bot_statistic_recipients(company_id: int):
+    """Increments the total unique recipients count for a company's bot statistics."""
+    try:
+        stats = get_bot_statistic_for_company(company_id)
+        if stats:
+            stats.total_recipients += 1 # This should be called only for *new* unique recipients
+            stats.updated_at = datetime.utcnow()
+            commit_safely()
+            logger.info(f"Updated bot statistics: recipients for company {company_id}.")
+            return True
+        return False
+    except SQLAlchemyError as e:
+        logger.error(f"Error updating bot statistics recipients for company {company_id}: {e}", exc_info=True)
+        db.session.rollback()
+        return False

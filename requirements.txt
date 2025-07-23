@@ -1,7 +1,8 @@
-flask
+Flask
 python-dotenv
-aiohttp
 requests
-google-generativeai
+SQLAlchemy
 Flask-SQLAlchemy
 psycopg2-binary
+google-generativeai
+gunicorn
