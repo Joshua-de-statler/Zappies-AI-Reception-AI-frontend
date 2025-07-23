@@ -6,4 +6,3 @@ Flask-SQLAlchemy
 psycopg2-binary
 google-generativeai
 gunicorn
-supabase
