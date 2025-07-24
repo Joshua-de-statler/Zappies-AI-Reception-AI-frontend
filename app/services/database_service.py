@@ -17,7 +17,7 @@ def commit_safely():
 def get_or_create_default_company():
     company = Company.query.filter_by(name="Default Company").first()
     if not company:
-        company = Company(name="Default Company", api_key="default_key") # Placeholder API key
+        company = Company(name="Default Company")
         db.session.add(company)
         if not commit_safely():
             logger.error("Failed to create default company.")
