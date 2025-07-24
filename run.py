@@ -1,6 +1,6 @@
 # run.py
 import os
-from app import create_app
+from app import create_app, db # Import db as well, if you intend to run commands directly from here
 from dotenv import load_dotenv
 import logging
 
@@ -17,6 +17,11 @@ logger.info("Configurations loaded.")
 
 app = create_app()
 
+# Add this if you want to use 'flask db' commands
+# from flask.cli import with_appcontext
+# from flask_migrate import MigrateCommand
+# app.cli.add_command('db', MigrateCommand) # Not strictly necessary for Railway, but for local management
+
 if __name__ == '__main__':
     logger.info("Starting Flask application on http://0.0.0.0:5000 (Debug: False)")
-    app.run(host='0.0.0.0', port=5000, debug=False) # Ensure debug=False for production
+    app.run(host='0.0.0.0', port=5000, debug=False)
