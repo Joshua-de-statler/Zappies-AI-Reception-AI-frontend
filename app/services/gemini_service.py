@@ -27,10 +27,12 @@ class GeminiService:
             self.model = genai.GenerativeModel('gemini-2.5-flash')
             logger.info("GeminiService initialized successfully with 'gemini-2.5-flash' model.")
 
-            # --- System Instruction / Bot Persona (YOUR PROVIDED TRAINING TEXT - DO NOT CHANGE) ---
-            # This instruction guides the AI's behavior, role, and initial responses.
-            # It will be sent with every generate_content call.
-            self.system_instruction = """
+            # --- System Instruction / Bot Persona as a Primer (using the "previous solution" method) ---
+            # This is your provided training text. It will be prepended as initial messages
+            # to the conversation history for each request.
+            self.primer_messages = [
+                {"role": "user", "parts": [
+                    {"text": """
 Your Objective: Drive measurable results for the visitor:
 - Help them uncover hidden bottlenecks in their lead conversion process
 - Position Zappies as a revenue-boosting partner, not just a chatbot tool
@@ -84,39 +86,33 @@ Your Limitations (Manage Expectations):
 
 Final Positioning:
 Zappies isn't just a tool. It's a powerful sales growth engine powered by intelligent AI. Your role is to show the visitor what they're missing and lead them toward a simple 'yes' by connecting pain with payoff. Our goal is to help businesses unlock hidden revenue potential and scale their sales effortlessly.
-"""
+"""}
+                ]},
+                # The model's expected first response based on the "First Impressions" playbook
+                # This helps to set the initial tone and expected conversation flow.
+                {"role": "model", "parts": [{"text": "Hi there! Are you interested in seeing how Zappies can help you turn more of your messages into revenue?"}]}
+            ]
+
 
         except Exception as e:
-            # Catch any exceptions during initialization (e.g., network issues, invalid key)
             logger.error(f"Failed to initialize Gemini model: {e}", exc_info=True)
-            self.model = None # Set model to None to indicate failure
+            self.model = None
 
     def generate_response(self, user_message: str, conversation_id: int = None) -> str:
         """
         Generates a response from the Gemini model.
-        It incorporates the defined system instruction and conversation history if a conversation_id is provided.
-
-        Args:
-            user_message (str): The current message from the user.
-            conversation_id (int, optional): The ID of the current conversation.
-                                             If provided, previous messages from this conversation
-                                             will be fetched from the database and included as context.
-
-        Returns:
-            str: The generated response text from the Gemini model.
-                 Returns a fallback message if the model is not available or an error occurs.
+        It incorporates the defined primer messages and conversation history if a conversation_id is provided.
         """
         if not self.model:
             logger.warning("Attempted to generate response but Gemini model is not initialized.")
             return "I apologize, the AI model is currently unavailable."
 
         try:
-            # Build the conversation context for Gemini
-            # The system_instruction is passed separately as a parameter to generate_content,
-            # so the 'contents' list only contains the dialogue turns.
             contents = []
+            # Prepend the primer messages to ensure the AI starts with its persona and initial greeting
+            contents.extend(self.primer_messages)
+
             if conversation_id:
-                # Fetch past messages from the database for the given conversation
                 history_from_db = get_conversation_history_for_gemini(conversation_id)
                 if history_from_db:
                     contents.extend(history_from_db)
@@ -124,18 +120,14 @@ Zappies isn't just a tool. It's a powerful sales growth engine powered by intell
                 else:
                     logger.debug(f"No previous messages found for conversation ID {conversation_id}.")
 
-            # Add the current user's message to the conversation history
+            # Add the current user's message to the end of the conversation
             contents.append({"role": "user", "parts": [{"text": user_message}]})
-            
+
             logger.info(f"Sending message to Gemini. Context length: {len(contents)} turns.")
-            
-            # Generate content using the model, passing the system_instruction
-            response = self.model.generate_content(
-                contents,
-                system_instruction=self.system_instruction # Pass the system instruction here
-            )
-            
-            # Return the generated text
+
+            # Generate content using the model. We are NOT using 'system_instruction' here.
+            response = self.model.generate_content(contents) 
+
             return response.text
         except Exception as e:
             logger.error(f"Error generating response from Gemini: {e}", exc_info=True)
