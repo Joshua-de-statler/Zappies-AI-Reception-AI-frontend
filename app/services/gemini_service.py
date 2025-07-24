@@ -23,8 +23,8 @@ class GeminiService:
             
             genai.configure(api_key=google_api_key)
             # Initialize the generative model
-            self.model = genai.GenerativeModel('gemini-pro')
-            logger.info("GeminiService initialized successfully with 'gemini-pro' model.")
+            self.model = genai.GenerativeModel('gemini-2.5-flash')
+            logger.info("GeminiService initialized successfully with 'gemini-2.5-flash' model.")
         except Exception as e:
             # Catch any exceptions during initialization (e.g., network issues, invalid key)
             logger.error(f"Failed to initialize Gemini Pro model: {e}")
