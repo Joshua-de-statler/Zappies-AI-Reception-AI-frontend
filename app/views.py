@@ -1,52 +1,43 @@
 # app/views.py
-
-from flask import Blueprint, request, jsonify, current_app
-import logging
 import os
-import json
+import json # Import json
+from flask import Blueprint, request, jsonify # Import jsonify
+import logging
+import time # Import time for logging
 
-# Import the necessary utility functions from whatsapp_utils
-from app.utils.whatsapp_utils import (
-    process_whatsapp_message,
-    get_whatsapp_message_type # Changed from is_valid_whatsapp_message
-)
+from app.config import VERIFY_TOKEN
+from app.utils.whatsapp_utils import process_whatsapp_message, send_whatsapp_message
 
 webhook_blueprint = Blueprint('webhook', __name__)
 logger = logging.getLogger(__name__)
 
-# --- Webhook for WhatsApp incoming messages ---
 @webhook_blueprint.route('/webhook', methods=['GET', 'POST'])
 def webhook():
     if request.method == 'GET':
-        # VERIFICATION request from Facebook/Meta
-        mode = request.args.get("hub.mode")
-        token = request.args.get("hub.verify_token")
-        challenge = request.args.get("hub.challenge")
-
-        VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
 
         if mode and token:
-            if mode == "subscribe" and token == VERIFY_TOKEN:
+            if mode == 'subscribe' and token == VERIFY_TOKEN:
                 logger.info("WEBHOOK_VERIFIED")
                 return challenge, 200
             else:
                 logger.warning("Webhook verification failed: Invalid token or mode.")
-                return "Verification token mismatch", 403
-        logger.warning("Webhook verification failed: Missing parameters.")
-        return "Missing parameters", 400
-
+                return 'Verification token mismatch', 403
+        else:
+            logger.warning("Webhook verification failed: Missing mode or token.")
+            return 'Missing parameters', 400
     elif request.method == 'POST':
-        # INCOMING MESSAGE or STATUS UPDATE from Facebook/Meta
         data = request.get_json()
-        logger.info(f"Received webhook data: {json.dumps(data, indent=2)}")
-
+        # Log the full incoming data for debugging purposes (be cautious with sensitive data in production)
+        logger.info(f"[{time.time()}] Webhook POST received. Data: {json.dumps(data, indent=2)}")
         try:
-            # Process the WhatsApp data (can be a message or a status update)
             status_message, status_code = process_whatsapp_message(data)
-            logger.info(f"Webhook processing complete: {status_message}")
+            logger.info(f"[{time.time()}] Webhook processing complete. Status: {status_message}, Code: {status_code}")
+            # Ensure a JSON response is always returned, even for 200 OK
             return jsonify({"status": status_message}), status_code
         except Exception as e:
-            logger.exception(f"Error during webhook processing: {e}")
+            logger.exception(f"[{time.time()}] Error during webhook processing: {e}")
+            # Always return a JSON response for errors too
             return jsonify({"status": "error", "message": "Internal server error"}), 500
-
-    return jsonify({"status": "Method not allowed"}), 405
