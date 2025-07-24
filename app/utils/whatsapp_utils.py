@@ -6,31 +6,52 @@ import requests
 import os
 import time
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
+from dotenv import load_dotenv # Ensure this import is at the top for load_dotenv()
 
-from app.services.gemini_service import GeminiService
+# Import necessary database service functions
 from app.services.database_service import (
     get_or_create_default_company,
     get_or_create_whatsapp_user,
     get_or_create_conversation,
-    record_message
+    record_message,
+    record_conversion_event # Added for logging handover events
 )
+from app.services.gemini_service import GeminiService
 
 logger = logging.getLogger(__name__)
 
-# Load environment variables
+# Load environment variables.
+# It's good practice to ensure they're loaded, though run.py or config.py might also do this.
+# This ensures that variables like ACCESS_TOKEN and CALENDLY_LINK are available here.
 load_dotenv()
-ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
-GRAPH_API_URL = os.getenv("GRAPH_API_URL")
 
-# Initialize GeminiService instance globally
+# --- Configuration from Environment Variables ---
+ACCESS_TOKEN = os.getenv("ACCESS_TOKEN")
+GRAPH_API_URL = os.getenv("GRAPH_API_URL", "https://graph.facebook.com") # Default to stable Graph API URL
+CALENDLY_LINK = os.getenv("CALENDLY_LINK") # Your Calendly booking link
+
+# --- AI Service Initialization ---
+gemini_service = None
 try:
     gemini_service = GeminiService()
 except Exception as e:
-    logger.error(f"Failed to initialize GeminiService: {e}. AI features will be limited.")
-    gemini_service = None
+    logger.error(f"Failed to initialize GeminiService: {e}. AI features will be limited.", exc_info=True)
+
+# --- Intent Detection Keywords for Human Handover ---
+# These keywords will trigger the Calendly link response.
+# Expand or refine this list based on common user phrases.
+MEETING_KEYWORDS = [
+    "schedule meeting", "book a meeting", "talk to sales",
+    "book a call", "want the product", "yes", "i'm interested",
+    "book now", "meeting", "sales" # Added more common keywords
+]
+
+# --- Utility Functions ---
 
 def get_whatsapp_message_type(data: dict) -> str:
+    """
+    Determines the type of WhatsApp message received (e.g., 'message', 'status', 'unsupported').
+    """
     if not isinstance(data, dict):
         return "unsupported"
 
@@ -41,13 +62,23 @@ def get_whatsapp_message_type(data: dict) -> str:
                     if 'value' in change:
                         if 'messages' in change['value']:
                             for message in change['value']['messages']:
-                                if 'type' in message and message['type'] in ['text', 'button', 'reaction', 'interactive', 'image', 'video', 'audio', 'document']:
+                                if 'type' in message and message['type'] in ['text', 'button', 'reaction', 'interactive', 'image', 'video', 'audio', 'document', 'sticker', 'location', 'contacts', 'order', 'system', 'unknown']:
                                     return "message"
                         elif 'statuses' in change['value']:
                             return "status"
     return "unsupported"
 
 def send_whatsapp_message(phone_number_id: str, to_number: str, text_message: str):
+    """
+    Sends a text message to a WhatsApp user via the WhatsApp Business API.
+    """
+    if not ACCESS_TOKEN:
+        logger.error("ACCESS_TOKEN is not set. Cannot send WhatsApp message.")
+        return False
+    if not phone_number_id:
+        logger.error("PHONE_NUMBER_ID is missing. Cannot send WhatsApp message.")
+        return False
+
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json",
@@ -72,9 +103,13 @@ def send_whatsapp_message(phone_number_id: str, to_number: str, text_message: st
         return False
 
 def process_whatsapp_message(data):
+    """
+    Processes incoming WhatsApp webhook data, handles messages, and triggers responses.
+    This function now includes human handover logic for meeting scheduling.
+    """
     ai_enabled = True
-    if not gemini_service:
-        logger.warning("GeminiService not initialized. AI responses will be unavailable.")
+    if not gemini_service or gemini_service.model is None: # Check if model was initialized successfully
+        logger.warning("GeminiService not initialized or model not available. AI responses will be unavailable.")
         ai_enabled = False
 
     message_type = get_whatsapp_message_type(data)
@@ -85,24 +120,25 @@ def process_whatsapp_message(data):
     elif message_type == "unsupported":
         logger.warning(f"[{time.time()}] Unsupported or invalid WhatsApp message structure received. Skipping processing.")
         return "Unsupported message type", 400
-
+    
+    # Process 'message' type (actual incoming messages)
     for entry in data['entry']:
         for change in entry['changes']:
             if 'messages' in change['value']:
                 for message in change['value']['messages']:
+                    # Only process text messages for now
                     if message['type'] == 'text':
-                        from_number = message['from']
-                        user_name = change['value']['contacts'][0]['profile']['name']
-                        message_body = message['text']['body']
-                        meta_message_id = message['id'] # Get Meta's unique message ID
+                        from_number = message['from'] # User's WhatsApp ID (phone number)
+                        user_name = change['value']['contacts'][0]['profile']['name'] # User's name
+                        message_body = message['text']['body'] # Actual text content
+                        meta_message_id = message['id'] # Meta's unique message ID for deduplication
 
                         logger.info(f"[{time.time()}] Received incoming text message from {user_name} ({from_number}): '{message_body}' (Meta ID: {meta_message_id})")
 
-                        # --- INITIAL SETUP FOR DB ENTRIES ---
+                        # --- Database Setup (Get or Create User, Company, Conversation) ---
                         company = get_or_create_default_company()
                         if not company:
                             logger.error(f"[{time.time()}] Failed to get or create default company. Cannot process message.")
-                            # Consider sending an error message to user here, or just let Meta retry
                             return "Database company error", 500
                         company_id = company.id
 
@@ -117,46 +153,79 @@ def process_whatsapp_message(data):
                             logger.error(f"[{time.time()}] Failed to get or create conversation for user {user_id}. Cannot process message.")
                             return "Database conversation error", 500
                         conversation_id = conversation.id
-                        # --- END INITIAL SETUP ---
+                        # --- End Database Setup ---
 
-                        # --- ATTEMPT TO RECORD USER MESSAGE (DEDUPLICATION POINT) ---
+                        # --- Record User Message & Deduplicate ---
                         start_record_user_time = time.time()
+                        # Pass meta_message_id for deduplication
                         recorded_user_message, is_duplicate = record_message(conversation_id, "user", message_body, meta_message_id=meta_message_id)
                         end_record_user_time = time.time()
                         logger.info(f"[{time.time()}] record_message for user (Meta ID {meta_message_id}) took {(end_record_user_time - start_record_user_time)*1000:.2f} ms. Is duplicate: {is_duplicate}")
 
                         if recorded_user_message is None:
                             logger.error(f"[{time.time()}] Failed to record user message (Meta ID {meta_message_id}). Skipping processing.")
-                            return "Failed to record message", 500 # Return 500 if DB record failed, Meta will retry
+                            return "Failed to record message", 500
 
                         if is_duplicate:
                             logger.info(f"[{time.time()}] Meta Message ID {meta_message_id} was identified as a duplicate. Skipping further processing and responding with 200 OK.")
-                            return "Message already processed", 200 # Crucial: immediately return 200 OK
-                        # --- END DEDUPLICATION ---
+                            return "Message already processed", 200
+                        # --- End Deduplication ---
 
-                        # If we reach here, it's a new, successfully recorded user message. Proceed with AI and sending.
-                        logger.info(f"[{time.time()}] Proceeding with AI for new message (Meta ID: {meta_message_id}).")
+                        # --- HUMAN HANDOVER LOGIC (Calendly Integration) ---
+                        user_message_lower = message_body.lower()
+                        handover_triggered = False
+                        bot_response_text = "" # Initialize bot_response_text
 
-                        ai_response_text = ""
-                        if ai_enabled:
-                            start_ai_time = time.time()
-                            ai_response_text = gemini_service.generate_response(message_body)
-                            end_ai_time = time.time()
-                            logger.info(f"[{time.time()}] Gemini response took {(end_ai_time - start_ai_time)*1000:.2f} ms.")
-                        else:
-                            ai_response_text = "I apologize, but my AI is currently offline. I cannot process your request."
-                            logger.warning(f"[{time.time()}] AI is offline, sending fallback response.")
+                        for keyword in MEETING_KEYWORDS:
+                            if keyword in user_message_lower:
+                                if not CALENDLY_LINK:
+                                    logger.error("CALENDLY_LINK environment variable is not set. Cannot provide booking link.")
+                                    bot_response_text = "I understand you'd like to schedule a meeting. However, I'm currently unable to provide a booking link. Please try again later or contact support directly."
+                                else:
+                                    bot_response_text = (
+                                        f"Great! I can help you schedule a meeting with one of our sales consultants.\n\n"
+                                        f"Please use this link to book a time that works best for you:\n{CALENDLY_LINK}\n\n"
+                                        f"Our team looks forward to speaking with you!"
+                                    )
+                                    # Record the conversion event for handover
+                                    record_conversion_event(
+                                        conversation_id,
+                                        "meeting_scheduled_calendly",
+                                        {"user_intent": message_body, "calendly_link_provided": CALENDLY_LINK}
+                                    )
+                                logger.info(f"[{time.time()}] Handover triggered by keyword: '{keyword}'. Providing Calendly link.")
+                                handover_triggered = True
+                                break # Exit loop once a keyword is matched
 
+                        # --- Proceed with AI if handover not triggered ---
+                        if not handover_triggered:
+                            logger.info(f"[{time.time()}] Proceeding with AI for new message (Meta ID: {meta_message_id}).")
+                            
+                            if ai_enabled:
+                                start_ai_time = time.time()
+                                # Call GeminiService to generate response, passing conversation_id for context
+                                ai_response_text = gemini_service.generate_response(message_body, conversation_id)
+                                end_ai_time = time.time()
+                                logger.info(f"[{time.time()}] Gemini response took {(end_ai_time - start_ai_time)*1000:.2f} ms.")
+                            else:
+                                ai_response_text = "I apologize, but my AI is currently offline. I cannot process your request."
+                                logger.warning(f"[{time.time()}] AI is offline, sending fallback response.")
+                            
+                            bot_response_text = ai_response_text # Set bot_response_text from AI
+
+                        # --- Record and Send Bot Message ---
                         record_bot_message_start_time = time.time()
-                        record_message(conversation_id, "bot", ai_response_text, response_to_message_id=recorded_user_message.id)
+                        # Use bot_response_text, which is either from handover or AI
+                        record_message(conversation_id, "bot", bot_response_text, response_to_message_id=recorded_user_message.id)
                         record_bot_message_end_time = time.time()
                         logger.info(f"[{time.time()}] record_message for bot took {(record_bot_message_end_time - record_bot_message_start_time)*1000:.2f} ms.")
 
                         send_whatsapp_start_time = time.time()
                         phone_number_id_for_sending = change['value']['metadata']['phone_number_id']
-                        send_whatsapp_message(phone_number_id_for_sending, from_number, ai_response_text)
+                        # Send bot_response_text
+                        send_whatsapp_message(phone_number_id_for_sending, from_number, bot_response_text)
                         send_whatsapp_end_time = time.time()
-                        logger.info(f"[{time.time()}] send_whatsapp_message took {(send_whatsapp_end_time - send_whatsapp_start_time)*1000:.2f} ms. Successfully sent AI response to {from_number}.")
+                        logger.info(f"[{time.time()}] send_whatsapp_message took {(send_whatsapp_end_time - send_whatsapp_start_time)*1000:.2f} ms. Successfully sent AI/Handover response to {from_number}.")
 
                         return "Message processed", 200
 
