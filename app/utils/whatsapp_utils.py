@@ -6,6 +6,7 @@ import requests
 import os
 import time
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
 from app.services.gemini_service import GeminiService
 from app.services.database_service import (
