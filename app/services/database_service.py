@@ -113,22 +113,44 @@ def update_conversation_status(conversation_id: int, status: str):
         db.session.rollback()
         return False
 
-# --- Message Operations ---
-def record_message(conversation_id: int, sender_type: str, content: str, response_to_message_id: int = None):
-    """Records an incoming (user) or outgoing (bot) message."""
+# --- Deduplication Check (NEW FUNCTION) ---
+def has_meta_message_id_been_processed(meta_message_id: str) -> bool:
+    """
+    Checks if a given Meta WhatsApp message ID has already been recorded in the database.
+    This prevents reprocessing of duplicate webhooks.
+    """
+    if not meta_message_id:
+        return False # Cannot deduplicate if no ID is provided
+
+    try:
+        # Check if any message with this meta_message_id exists.
+        # Only user messages will carry the original meta_message_id from Meta.
+        return Message.query.filter_by(meta_message_id=meta_message_id).first() is not None
+    except SQLAlchemyError as e:
+        logger.error(f"Database error checking for duplicate Meta message ID {meta_message_id}: {e}", exc_info=True)
+        db.session.rollback() # Rollback if query fails
+        # In case of DB error, assume it's not processed to avoid missing messages,
+        # but this might lead to duplicates if the error is transient.
+        return False
+
+
+# --- Message Operations (MODIFIED record_message) ---
+def record_message(conversation_id: int, sender_type: str, content: str, response_to_message_id: int = None, meta_message_id: str = None):
+    """Records an incoming (user) or outgoing (bot) message, including Meta's message ID."""
     try:
         message = Message(
             conversation_id=conversation_id,
             sender_type=sender_type, # Expected: 'user' or 'bot'
             content=content,
             response_to_message_id=response_to_message_id, # Links bot response to user's message
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
+            meta_message_id=meta_message_id # Store Meta's ID here (will be None for bot messages)
         )
         db.session.add(message)
         if not commit_safely():
             logger.error(f"Failed to save {sender_type} message for conversation '{conversation_id}' after add.")
             return None
-        logger.info(f"Recorded {sender_type} message for conversation {conversation_id}: '{content[:50]}...'")
+        logger.info(f"Recorded {sender_type} message for conversation {conversation_id}: '{content[:50]}...' (Meta ID: {meta_message_id if meta_message_id else 'N/A'})")
         return message
     except SQLAlchemyError as e:
         logger.error(f"Error recording {sender_type} message for conversation ID '{conversation_id}': {e}", exc_info=True)

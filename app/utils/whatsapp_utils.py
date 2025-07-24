@@ -11,7 +11,8 @@ from app.services.database_service import (
     get_or_create_default_company,
     get_or_create_whatsapp_user,
     get_or_create_conversation,
-    record_message
+    record_message,
+    has_meta_message_id_been_processed # NEW IMPORT for deduplication check
 )
 
 logger = logging.getLogger(__name__)
@@ -28,14 +29,13 @@ except Exception as e:
     logger.error(f"Failed to initialize GeminiService: {e}. AI features will be limited.")
     gemini_service = None
 
-# --- Message Deduplication ---
-processed_message_ids = set()
-
-def is_message_processed(message_id: str) -> bool:
-    return message_id in processed_message_ids
-
-def add_message_to_processed_list(message_id: str):
-    processed_message_ids.add(message_id)
+# --- Message Deduplication (REMOVED IN-MEMORY SET) ---
+# processed_message_ids = set()
+# def is_message_processed(message_id: str) -> bool:
+#     return message_id in processed_message_ids
+# def add_message_to_processed_list(message_id: str):
+#     processed_message_ids.add(message_id)
+# --- END REMOVED ---
 
 # --- Function to validate incoming WhatsApp messages ---
 def get_whatsapp_message_type(data: dict) -> str:
@@ -71,8 +71,6 @@ def process_whatsapp_message(data):
 
     if message_type == "status":
         logger.info("Received a WhatsApp message status update (e.g., sent, delivered, read). Acknowledging.")
-        # For status updates, we simply acknowledge with a 200 OK.
-        # No further processing (like AI response or DB record) is needed for status updates.
         return "Status update acknowledged", 200
     elif message_type == "unsupported":
         logger.warning("Unsupported or invalid WhatsApp message structure received. Skipping processing.")
@@ -89,13 +87,15 @@ def process_whatsapp_message(data):
                         from_number = message['from']
                         user_name = change['value']['contacts'][0]['profile']['name']
                         message_body = message['text']['body']
-                        message_id = message['id']
+                        meta_message_id = message['id'] # Get Meta's unique message ID
 
-                        logger.info(f"Processing incoming text message from {user_name} ({from_number}): '{message_body}' (Meta ID: {message_id})")
+                        logger.info(f"Processing incoming text message from {user_name} ({from_number}): '{message_body}' (Meta ID: {meta_message_id})")
 
-                        if is_message_processed(message_id):
-                            logger.info(f"Message ID already processed: {message_id}. Skipping.")
+                        # --- DATABASE-BASED DEDUPLICATION CHECK (NEW) ---
+                        if has_meta_message_id_been_processed(meta_message_id):
+                            logger.info(f"Meta Message ID {meta_message_id} already processed. Skipping.")
                             return "Message already processed", 200
+                        # --- END NEW ---
 
                         company = get_or_create_default_company()
                         if not company:
@@ -130,8 +130,9 @@ def process_whatsapp_message(data):
                             return "Database conversation error", 500
                         conversation_id = conversation.id
 
-                        record_message(conversation_id, "user", message_body)
-                        logger.info(f"Recorded user message for conversation {conversation_id}: '{message_body}'")
+                        # Pass meta_message_id to record_message for user messages
+                        record_message(conversation_id, "user", message_body, meta_message_id=meta_message_id)
+                        logger.info(f"Recorded user message for conversation {conversation_id}: '{message_body}' with Meta ID: {meta_message_id}")
 
                         ai_response_text = ""
                         if ai_enabled:
@@ -140,6 +141,7 @@ def process_whatsapp_message(data):
                             ai_response_text = "I apologize, but my AI is currently offline. I cannot process your request."
                             logger.warning("AI is offline, sending fallback response.")
 
+                        # For bot messages, meta_message_id will be None
                         record_message(conversation_id, "bot", ai_response_text)
                         logger.info(f"Recorded bot message for conversation {conversation_id}: '{ai_response_text}'")
 
@@ -147,14 +149,13 @@ def process_whatsapp_message(data):
                         send_whatsapp_message(phone_number_id_for_sending, from_number, ai_response_text)
                         logger.info(f"Successfully sent AI response to {from_number}.")
 
-                        add_message_to_processed_list(message_id)
-                        logger.info(f"Marked message ID as processed: {message_id}")
+                        # Removed add_message_to_processed_list as deduplication is now DB-based
+                        # add_message_to_processed_list(message_id)
+                        # logger.info(f"Marked message ID as processed: {message_id}")
+
                     else:
                         logger.info(f"Received unsupported message type: {message.get('type')}. Skipping processing for now.")
 
-            # 'statuses' are now handled by the initial check for message_type, so this 'elif' is no longer strictly needed here,
-            # but it doesn't hurt to keep it if there's any edge case where get_whatsapp_message_type might miss it.
-            # However, the primary handling is now at the top of this function.
             elif 'statuses' in change['value']:
                 logger.info("Received a WhatsApp message status update (e.g., delivered/read) within main loop. This should have been caught earlier. Acknowledging anyway.")
                 return "Status update acknowledged (redundant check)", 200 # Redundant but safe

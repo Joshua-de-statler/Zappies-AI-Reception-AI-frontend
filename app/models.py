@@ -1,9 +1,8 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-import json # Import json for handling JSON data type for details field
-from sqlalchemy.dialects.postgresql import JSONB # Use JSONB for PostgreSQL for better performance with JSON
+import json
+from sqlalchemy.dialects.postgresql import JSONB
 
-# Initialize SQLAlchemy. This 'db' object will be imported by other modules.
 db = SQLAlchemy()
 
 # --- Company Model ---
@@ -64,6 +63,7 @@ class Message(db.Model):
     content = db.Column(db.Text, nullable=False)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     response_to_message_id = db.Column(db.Integer, db.ForeignKey('messages.id'), nullable=True) # For bot responses
+    meta_message_id = db.Column(db.String(255), unique=True, nullable=True, index=True) # ADDED THIS LINE
 
     # Relationship for linking responses
     response_to = db.relationship('Message', remote_side=[id], backref='responses', lazy=True)
@@ -77,7 +77,6 @@ class ConversionEvent(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     conversation_id = db.Column(db.Integer, db.ForeignKey('conversations.id'), nullable=False)
     event_type = db.Column(db.String(50), nullable=False) # e.g., 'lead_qualified', 'consultation_booked', 'product_interest'
-    # Use JSONB for PostgreSQL for efficient storage and querying of JSON data
     details = db.Column(JSONB, nullable=True) # Stores additional event details as JSON
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
