@@ -7,3 +7,4 @@ psycopg2-binary
 google-generativeai
 gunicorn
 Flask-Migrate
+Pillow

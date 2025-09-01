@@ -308,7 +308,6 @@ By focusing on the service first, you're not just selling a product—you're sel
                 ]},
                 # The model's expected first response based on the "First Impressions" playbook
                 # This helps to set the initial tone and expected conversation flow.
-                # {"role": "model", "parts": [{"text": "Hi there! Are you interested in seeing how Zappies can help you turn more of your messages into revenue?"}]}
                 {"role": "model", "parts": [{"text": "Hi there! Would you like to know more about Naturarose?"}]}
             ]
 
@@ -317,7 +316,7 @@ By focusing on the service first, you're not just selling a product—you're sel
             logger.error(f"Failed to initialize Gemini model: {e}", exc_info=True)
             self.model = None
 
-    def generate_response(self, user_message: str, conversation_id: int = None) -> str:
+    def generate_response(self, user_parts: list, conversation_id: int = None) -> str:
         """
         Generates a response from the Gemini model.
         It incorporates the defined primer messages and conversation history if a conversation_id is provided.
@@ -339,8 +338,8 @@ By focusing on the service first, you're not just selling a product—you're sel
                 else:
                     logger.debug(f"No previous messages found for conversation ID {conversation_id}.")
 
-            # Add the current user's message to the end of the conversation
-            contents.append({"role": "user", "parts": [{"text": user_message}]})
+            # Add the current user's message parts to the end of the conversation
+            contents.append({"role": "user", "parts": user_parts})
 
             logger.info(f"Sending message to Gemini. Context length: {len(contents)} turns.")
 
