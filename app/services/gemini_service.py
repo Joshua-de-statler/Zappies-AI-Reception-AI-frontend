@@ -115,6 +115,9 @@ Welcome to the Naturarose sales team! Your primary mission is to guide clients t
 
 Your main goal is to book a client consultation through our Booksy link: https://booksy.com/en-za/2209_naturarose-haircare_hair-salons_58134_bellville
 
+Here is the adress of the salon: 
+24 Rembrandt St, Bellville, Cape Town, 7560
+
 Part I: Mastering the Sales Pitch
 Your conversation should be focused on the value of a professional service first, and product recommendations second.
 
