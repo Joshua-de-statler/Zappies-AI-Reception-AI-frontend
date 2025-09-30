@@ -1,10 +1,9 @@
 # app/services/gemini_service.py
-
 import os
 import google.generativeai as genai
 import logging
-# Ensure this import is present for fetching history
 from app.services.database_service import get_conversation_history_for_gemini
+from flask import current_app
 
 logger = logging.getLogger(__name__)
 
@@ -15,21 +14,17 @@ class GeminiService:
         Fetches the API key from environment variables.
         """
         try:
-            google_api_key = os.getenv("GOOGLE_API_KEY")
+            google_api_key = current_app.config.get("GOOGLE_API_KEY")
             if not google_api_key:
-                # Log an error and raise if the API key is missing
                 logger.error("GOOGLE_API_KEY environment variable not set. Gemini service will not function.")
                 raise ValueError("GOOGLE_API_KEY environment variable not set.")
             
             genai.configure(api_key=google_api_key)
             
-            # Initialize the generative model with the CORRECT NAME: gemini-2.5-flash
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
-            logger.info("GeminiService initialized successfully with 'gemini-2.5-flash' model.")
+            model_name = current_app.config.get("GEMINI_MODEL", "gemini-1.5-flash")
+            self.model = genai.GenerativeModel(model_name)
+            logger.info(f"GeminiService initialized successfully with '{model_name}' model.")
 
-            # --- System Instruction / Bot Persona as a Primer (using the "previous solution" method) ---
-            # This is your provided training text, adjusted to sell the bot directly.
-            # It will be prepended as initial messages to the conversation history for each request.
             self.primer_messages = [
                 {"role": "user", "parts": [
                     {"text": """
@@ -309,11 +304,8 @@ Familiarize yourself with the full list of products and their prices to be able 
 
 By focusing on the service first, you're not just selling a product—you're selling a complete solution, building trust, and driving appointments to our salon. This approach leads to higher customer satisfaction and bigger sales over time."""}
                 ]},
-                # The model's expected first response based on the "First Impressions" playbook
-                # This helps to set the initial tone and expected conversation flow.
                 {"role": "model", "parts": [{"text": "Hi there! Would you like to know more about Naturarose?"}]}
             ]
-
 
         except Exception as e:
             logger.error(f"Failed to initialize Gemini model: {e}", exc_info=True)
@@ -329,8 +321,8 @@ By focusing on the service first, you're not just selling a product—you're sel
             return "I apologize, the AI model is currently unavailable."
 
         try:
+            # Build the conversation history
             contents = []
-            # Prepend the primer messages to ensure the AI starts with its persona and initial greeting
             contents.extend(self.primer_messages)
 
             if conversation_id:
@@ -338,18 +330,16 @@ By focusing on the service first, you're not just selling a product—you're sel
                 if history_from_db:
                     contents.extend(history_from_db)
                     logger.debug(f"Fetched {len(history_from_db)} previous messages for context.")
-                else:
-                    logger.debug(f"No previous messages found for conversation ID {conversation_id}.")
 
-            # Add the current user's message parts to the end of the conversation
+            # Add the current user's message
             contents.append({"role": "user", "parts": user_parts})
 
             logger.info(f"Sending message to Gemini. Context length: {len(contents)} turns.")
-
-            # Generate content using the model. We are NOT using 'system_instruction' here.
-            response = self.model.generate_content(contents) 
-
+            
+            # Generate the response
+            response = self.model.generate_content(contents)
             return response.text
+
         except Exception as e:
             logger.error(f"Error generating response from Gemini: {e}", exc_info=True)
-            return "I'm sorry, I couldn't generate a response at this moment. Please try again."
+            return "I'm sorry, I'm having trouble understanding. Please try again."

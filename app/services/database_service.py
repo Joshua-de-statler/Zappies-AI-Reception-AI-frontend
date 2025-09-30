@@ -1,3 +1,4 @@
+# app/services/database_service.py
 import logging
 from datetime import datetime
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
@@ -5,7 +6,8 @@ from app.models import db, Company, WhatsAppUser, Conversation, Message, Convers
 
 logger = logging.getLogger(__name__)
 
-def commit_safely():
+def _commit_session():
+    """Commits the current database session with error handling."""
     try:
         db.session.commit()
         return True
@@ -14,45 +16,47 @@ def commit_safely():
         logger.error(f"Database commit failed: {e}", exc_info=True)
         return False
 
+def _add_and_commit(instance):
+    """Adds a new instance to the database and commits it."""
+    db.session.add(instance)
+    if not _commit_session():
+        logger.error(f"Failed to create {instance.__class__.__name__}.")
+        return None
+    return instance
+
 def get_or_create_default_company():
+    """Gets or creates the default company."""
     company = Company.query.filter_by(name="Default Company").first()
     if not company:
-        company = Company(name="Default Company")
-        db.session.add(company)
-        if not commit_safely():
-            logger.error("Failed to create default company.")
-            return None
-        logger.info("Created new default company.")
+        company = _add_and_commit(Company(name="Default Company"))
+        if company:
+            logger.info("Created new default company.")
     return company
 
 def get_or_create_whatsapp_user(wa_id: str, name: str, company_id: int):
+    """Gets or creates a WhatsApp user."""
     user = WhatsAppUser.query.filter_by(wa_id=wa_id).first()
     if not user:
-        user = WhatsAppUser(wa_id=wa_id, name=name, company_id=company_id)
-        db.session.add(user)
-        if not commit_safely():
-            logger.error(f"Failed to create WhatsApp user {wa_id}.")
-            return None
-        logger.info(f"Created new WhatsApp user: {name} ({wa_id}).")
+        user = _add_and_commit(WhatsAppUser(wa_id=wa_id, name=name, company_id=company_id))
+        if user:
+            logger.info(f"Created new WhatsApp user: {name} ({wa_id}).")
     return user
 
 def get_or_create_conversation(user_id: int, company_id: int):
+    """Gets or creates a conversation."""
     conversation = Conversation.query.filter_by(user_id=user_id, company_id=company_id).first()
     if not conversation:
-        conversation = Conversation(user_id=user_id, company_id=company_id)
-        db.session.add(conversation)
-        if not commit_safely():
-            logger.error(f"Failed to create conversation for user {user_id}.")
-            return None
-        logger.info(f"Created new conversation for user {user_id}.")
+        conversation = _add_and_commit(Conversation(user_id=user_id, company_id=company_id))
+        if conversation:
+            logger.info(f"Created new conversation for user {user_id}.")
     return conversation
 
 def update_conversation_status(conversation_id: int, status: str):
+    """Updates the status of a conversation."""
     conversation = Conversation.query.get(conversation_id)
     if conversation:
         conversation.status = status
-        if not commit_safely():
-            logger.error(f"Failed to update conversation {conversation_id} status to {status}.")
+        _commit_session()
     else:
         logger.warning(f"Conversation {conversation_id} not found for status update.")
 
@@ -63,73 +67,37 @@ def record_message(conversation_id: int, sender_type: str, content: str, respons
     Returns a tuple: (message_object, is_duplicate_bool). Returns (None, False) on unexpected error.
     """
     try:
-        # Handle user message deduplication
         if meta_message_id and sender_type == 'user':
-            # First, check if it already exists (fast query for known duplicates or pre-existing data)
             existing_message = Message.query.filter_by(meta_message_id=meta_message_id).first()
             if existing_message:
-                logger.warning(f"Meta message ID '{meta_message_id}' already exists in DB. Returning existing message.")
-                return (existing_message, True) # Signal that it's a duplicate
+                logger.warning(f"Meta message ID '{meta_message_id}' already exists. Skipping.")
+                return (existing_message, True)
 
-            # If not found, attempt to add. IntegrityError will catch concurrent writes.
-            message = Message(
-                conversation_id=conversation_id,
-                sender_type=sender_type,
-                content=content,
-                response_to_message_id=response_to_message_id,
-                timestamp=datetime.utcnow(),
-                meta_message_id=meta_message_id
-            )
-            db.session.add(message)
-            # Flush to attempt write and potentially catch IntegrityError for concurrent requests
-            # before the full commit and before expensive operations in whatsapp_utils.
-            db.session.flush()
+        message = Message(
+            conversation_id=conversation_id,
+            sender_type=sender_type,
+            content=content,
+            response_to_message_id=response_to_message_id,
+            timestamp=datetime.utcnow(),
+            meta_message_id=meta_message_id
+        )
+        db.session.add(message)
+        db.session.commit()
+        logger.info(f"Recorded {sender_type} message for conversation {conversation_id}: '{content[:50]}...'")
+        return (message, False)
 
-            if not commit_safely():
-                logger.error(f"Failed to commit new user message for Meta ID '{meta_message_id}'.")
-                return (None, False) # Failed to commit, treat as error
-
-            logger.info(f"Recorded NEW user message for conversation {conversation_id}: '{content[:50]}...' (Meta ID: {meta_message_id})")
-            return (message, False) # Successfully recorded new message
-
-        # Handle bot messages or user messages without meta_message_id
-        else:
-            message = Message(
-                conversation_id=conversation_id,
-                sender_type=sender_type,
-                content=content,
-                response_to_message_id=response_to_message_id,
-                timestamp=datetime.utcnow(),
-                meta_message_id=meta_message_id # Will be None for bot messages
-            )
-            db.session.add(message)
-            if not commit_safely():
-                logger.error(f"Failed to save {sender_type} message for conversation '{conversation_id}'.")
-                return (None, False)
-            logger.info(f"Recorded {sender_type} message for conversation {conversation_id}: '{content[:50]}...'")
-            return (message, False) # Successfully recorded, not a duplicate
-
-    except IntegrityError as e:
-        db.session.rollback() # Rollback the session if IntegrityError occurs
-        if meta_message_id and sender_type == 'user' and "meta_message_id" in str(e):
-            logger.warning(f"IntegrityError: Concurrent write for Meta message ID '{meta_message_id}' detected. It's a duplicate.")
-            # Attempt to retrieve the message that *was* successfully written by another process
-            existing_message = Message.query.filter_by(meta_message_id=meta_message_id).first()
-            if existing_message:
-                return (existing_message, True) # Indicate it's a duplicate
-            else:
-                logger.error(f"IntegrityError for {meta_message_id} but couldn't retrieve existing message. Possible race condition during retrieval.")
-                return (None, False) # Fallback to error
-        else:
-            logger.error(f"IntegrityError: Unexpected database integrity error recording {sender_type} message for conversation ID '{conversation_id}': {e}", exc_info=True)
-            return (None, False) # General integrity error
-
-    except SQLAlchemyError as e:
-        logger.error(f"SQLAlchemyError: Error recording {sender_type} message for conversation ID '{conversation_id}': {e}", exc_info=True)
+    except IntegrityError:
         db.session.rollback()
-        return (None, False) # General SQLAlchemy error
+        logger.warning(f"Duplicate message with meta_message_id '{meta_message_id}' received. Ignoring.")
+        existing_message = Message.query.filter_by(meta_message_id=meta_message_id).first()
+        return (existing_message, True)
+    except SQLAlchemyError as e:
+        db.session.rollback()
+        logger.error(f"Error recording message for conversation {conversation_id}: {e}", exc_info=True)
+        return (None, False)
 
 def get_conversation_history_for_gemini(conversation_id: int):
+    """Retrieves the conversation history for the Gemini model."""
     messages = Message.query.filter_by(conversation_id=conversation_id).order_by(Message.timestamp).all()
     history = []
     for msg in messages:
@@ -138,43 +106,11 @@ def get_conversation_history_for_gemini(conversation_id: int):
     return history
 
 def record_conversion_event(conversation_id: int, event_type: str, details: dict = None):
+    """Records a conversion event."""
     event = ConversionEvent(
         conversation_id=conversation_id,
         event_type=event_type,
         details=details,
         timestamp=datetime.utcnow()
     )
-    db.session.add(event)
-    if not commit_safely():
-        logger.error(f"Failed to record conversion event '{event_type}' for conversation {conversation_id}.")
-
-def get_bot_statistic_for_company(company_id: int):
-    stat = BotStatistic.query.filter_by(company_id=company_id).first()
-    if not stat:
-        stat = BotStatistic(company_id=company_id, total_conversions=0, total_response_time_ms=0, total_recipients=0)
-        db.session.add(stat)
-        if not commit_safely():
-            logger.error(f"Failed to create bot statistic for company {company_id}.")
-            return None
-    return stat
-
-def update_bot_statistic_conversions(company_id: int, increment: int = 1):
-    stat = get_bot_statistic_for_company(company_id)
-    if stat:
-        stat.total_conversions += increment
-        if not commit_safely():
-            logger.error(f"Failed to update conversion statistic for company {company_id}.")
-
-def update_bot_statistic_response_time(company_id: int, duration_ms: float):
-    stat = get_bot_statistic_for_company(company_id)
-    if stat:
-        stat.total_response_time_ms += duration_ms
-        if not commit_safely():
-            logger.error(f"Failed to update response time statistic for company {company_id}.")
-
-def update_bot_statistic_recipients(company_id: int, increment: int = 1):
-    stat = get_bot_statistic_for_company(company_id)
-    if stat:
-        stat.total_recipients += increment
-        if not commit_safely():
-            logger.error(f"Failed to update recipient statistic for company {company_id}.")
+    _add_and_commit(event)
